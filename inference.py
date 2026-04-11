@@ -220,6 +220,54 @@ def build_prompt(task: str, obs: Dict[str, Any], step: int) -> str:
         )
 
 
+def smart_action_override(task: str, obs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ctx = obs.get("context", {})
+
+    # SEPSIS FIX
+    if task == "sepsis_watch":
+        sofa = ctx.get("current_sofa", 0)
+        if sofa >= 4:
+            return {
+                "action_type": "escalate",
+                "escalation_level": "rapid_response",
+                "reasoning": "SOFA rising — early escalation critical"
+            }
+
+    # VENT FIX
+    if task == "vent_weaning":
+        checks = ctx.get("checks_completed", [])
+
+        order = [
+            "assess_oxygenation",
+            "assess_consciousness",
+            "assess_secretions",
+            "check_rsbi",
+            "reduce_fio2",
+            "reduce_peep"
+        ]
+
+        for step_needed in order:
+            if step_needed not in checks:
+                return {"action_type": "vent_check", "investigation": step_needed}
+
+        if not ctx.get("sbt_performed"):
+            return {"action_type": "perform_sbt"}
+
+        return {"action_type": "extubate"}
+
+    # DIAGNOSTIC FIX
+    if task == "diagnostic_reasoning":
+        ordered = ctx.get("investigations_ordered", [])
+
+        if "sputum_afb_smear" not in ordered:
+            return {
+                "action_type": "order_investigation",
+                "investigation": "sputum_afb_smear"
+            }
+
+    return None
+
+
 async def run_task(task: str) -> None:
     try:
         from clinicalops.client import ClinicalOpsEnv
@@ -254,7 +302,12 @@ async def run_task(task: str) -> None:
 
                 try:
                     prompt = build_prompt(task, obs, step)
-                    action_dict = call_llm(prompt)
+                    override = smart_action_override(task, obs)
+
+                    if override is not None:
+                        action_dict = override
+                    else:
+                        action_dict = call_llm(prompt)
                     action_str = json.dumps(action_dict)
                     action = ClinicalOpsAction(**action_dict)
                     result = await env.step(action)
