@@ -218,3 +218,179 @@ SEPSIS_TRAJECTORY: List[Dict[str, Any]] = [
     {"vitals": {"heart_rate": 140, "respiratory_rate": 34, "spo2": 86.0, "systolic_bp": 72,  "temperature": 40.1, "consciousness": "Pain"},
      "labs":   {"wbc": 25.2, "creatinine": 302, "lactate": 6.0, "bilirubin": 98, "platelets": 62,  "pao2_fio2": 170}, "sofa": 8},
 ]
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 4 — Ventilator Weaning  (Medium-Hard, 8 steps)
+# Agent assesses ICU patient for readiness to wean off mechanical ventilation
+# using SBT (Spontaneous Breathing Trial) criteria
+# ─────────────────────────────────────────────────────────────────────────────
+
+VENT_PATIENT_BASE = {
+    "patient_id": "PT301",
+    "name": "Aditya Rao",
+    "age": 64,
+    "chief_complaint": "Day 5 post-ARDS — assess for ventilator weaning",
+    "allergies": [],
+    "history": ["ARDS secondary to pneumonia", "hypertension", "type 2 diabetes"],
+    "vitals": {
+        "heart_rate": 88, "respiratory_rate": 18, "spo2": 97.0,
+        "systolic_bp": 118, "temperature": 37.2, "consciousness": "Alert"
+    },
+    "vent_settings": {
+        "mode": "SIMV",
+        "fio2": 0.40,
+        "peep": 8,
+        "pressure_support": 12,
+        "tidal_volume": 480,
+        "rr_set": 14,
+        "pip": 22,
+    },
+    "labs": {
+        "pao2": 88.0,
+        "paco2": 42.0,
+        "ph": 7.38,
+        "hco3": 24.0,
+        "pao2_fio2": 220.0,
+        "wbc": 9.2,
+        "hemoglobin": 10.8,
+    },
+    "sbt_attempted": False,
+    "rsbi": 68,  # Rapid Shallow Breathing Index — <105 is good
+}
+
+# Ground truth weaning readiness checklist (SBT criteria)
+VENT_WEANING_CHECKLIST = [
+    {"check": "assess_oxygenation",   "required": True,  "description": "Check PaO2/FiO2 ratio — must be > 150"},
+    {"check": "assess_consciousness", "required": True,  "description": "Confirm patient is awake and following commands"},
+    {"check": "assess_secretions",    "required": True,  "description": "Check secretion burden — must be manageable"},
+    {"check": "check_rsbi",           "required": True,  "description": "RSBI < 105 predicts successful extubation"},
+    {"check": "reduce_fio2",          "required": True,  "description": "Reduce FiO2 to <= 0.40 before SBT"},
+    {"check": "reduce_peep",          "required": True,  "description": "Reduce PEEP to <= 5 cmH2O"},
+    {"check": "perform_sbt",          "required": True,  "description": "Conduct 30-minute spontaneous breathing trial"},
+    {"check": "extubate",             "required": False, "description": "Decision to extubate based on SBT result"},
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 5 — Diagnostic Reasoning  (Hard, 12 steps)
+# Patient with ambiguous presentation — agent must order investigations
+# strategically to narrow to correct diagnosis
+# ─────────────────────────────────────────────────────────────────────────────
+
+DIAGNOSTIC_PATIENT = {
+    "patient_id": "PT401",
+    "name": "Neha Sharma",
+    "age": 45,
+    "chief_complaint": "3-week history of fatigue, weight loss 6kg, night sweats, dry cough",
+    "allergies": ["sulfonamides"],
+    "history": ["visited rural Maharashtra 2 months ago", "works as schoolteacher"],
+    "vitals": {
+        "heart_rate": 94, "respiratory_rate": 20, "spo2": 95.0,
+        "systolic_bp": 108, "temperature": 37.8, "consciousness": "Alert"
+    },
+    "labs": {
+        "wbc": 11.2,
+        "hemoglobin": 10.4,
+        "esr": 88,
+        "crp": 42,
+        "ldh": 380,
+        "calcium": 2.62,
+        "albumin": 32,
+    },
+}
+
+# Differential diagnoses — agent must narrow to correct one
+DIFFERENTIAL_DIAGNOSES = [
+    "pulmonary_tuberculosis",
+    "sarcoidosis",
+    "lymphoma",
+    "lung_adenocarcinoma",
+    "community_acquired_pneumonia",
+    "hypersensitivity_pneumonitis",
+    "pulmonary_histoplasmosis",
+    "miliary_tuberculosis",
+    "bronchiectasis",
+    "pulmonary_embolism",
+]
+
+# Correct diagnosis
+CORRECT_DIAGNOSIS = "pulmonary_tuberculosis"
+
+# Investigation results — what each test reveals
+DIAGNOSTIC_INVESTIGATIONS = {
+    "chest_xray": {
+        "result": "Bilateral upper lobe infiltrates with cavitation. Hilar lymphadenopathy.",
+        "narrows_to": ["pulmonary_tuberculosis", "miliary_tuberculosis", "sarcoidosis"],
+        "rules_out": ["pulmonary_embolism", "bronchiectasis"],
+        "yield": "high",
+    },
+    "sputum_afb_smear": {
+        "result": "Acid-fast bacilli 2+ on ZN staining. Consistent with active tuberculosis.",
+        "narrows_to": ["pulmonary_tuberculosis", "miliary_tuberculosis"],
+        "rules_out": ["sarcoidosis", "lymphoma", "lung_adenocarcinoma", "hypersensitivity_pneumonitis"],
+        "yield": "definitive",
+    },
+    "sputum_culture": {
+        "result": "Mycobacterium tuberculosis complex — pending sensitivity (result in 6 weeks).",
+        "narrows_to": ["pulmonary_tuberculosis"],
+        "rules_out": [],
+        "yield": "definitive",
+    },
+    "ct_chest": {
+        "result": "Tree-in-bud pattern, upper lobe consolidation with central cavitation. Mediastinal lymphadenopathy. No pleural effusion.",
+        "narrows_to": ["pulmonary_tuberculosis", "miliary_tuberculosis"],
+        "rules_out": ["lung_adenocarcinoma", "pulmonary_embolism", "bronchiectasis"],
+        "yield": "high",
+    },
+    "mantoux_test": {
+        "result": "Induration 18mm at 48h — strongly positive.",
+        "narrows_to": ["pulmonary_tuberculosis", "miliary_tuberculosis"],
+        "rules_out": [],
+        "yield": "moderate",
+    },
+    "igra_test": {
+        "result": "Interferon-Gamma Release Assay POSITIVE — Mycobacterium tuberculosis infection confirmed.",
+        "narrows_to": ["pulmonary_tuberculosis", "miliary_tuberculosis"],
+        "rules_out": ["sarcoidosis", "hypersensitivity_pneumonitis"],
+        "yield": "high",
+    },
+    "bronchoscopy_bal": {
+        "result": "BAL: lymphocytosis, AFB positive in lavage. No malignant cells.",
+        "narrows_to": ["pulmonary_tuberculosis"],
+        "rules_out": ["lung_adenocarcinoma", "lymphoma"],
+        "yield": "high",
+    },
+    "serum_ace": {
+        "result": "ACE level 28 U/L — normal. Makes sarcoidosis less likely.",
+        "narrows_to": ["pulmonary_tuberculosis", "lymphoma", "miliary_tuberculosis"],
+        "rules_out": ["sarcoidosis"],
+        "yield": "moderate",
+    },
+    "hiv_test": {
+        "result": "HIV antibody NEGATIVE. CD4 count not indicated.",
+        "narrows_to": [],
+        "rules_out": [],
+        "yield": "low",
+    },
+    "lft_rft": {
+        "result": "LFTs mildly elevated (ALT 52, AST 48). Renal function normal.",
+        "narrows_to": [],
+        "rules_out": [],
+        "yield": "low",
+    },
+    "pet_scan": {
+        "result": "FDG-avid mediastinal and hilar nodes. Upper lobe hypermetabolic lesions. No extrathoracic disease.",
+        "narrows_to": ["pulmonary_tuberculosis", "sarcoidosis", "lymphoma"],
+        "rules_out": ["pulmonary_embolism"],
+        "yield": "moderate",
+    },
+    "echocardiogram": {
+        "result": "Normal LV function. No pericardial effusion. No features of cardiac sarcoidosis.",
+        "narrows_to": [],
+        "rules_out": ["sarcoidosis"],
+        "yield": "low",
+    },
+}
+
+# Minimum efficient path — what a good clinician would order
+OPTIMAL_INVESTIGATION_PATH = [
+    "chest_xray", "sputum_afb_smear", "ct_chest", "mantoux_test"
+]
