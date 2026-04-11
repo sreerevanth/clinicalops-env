@@ -2,7 +2,7 @@
 title: ClinicalOps - Hospital Clinical Workflow
 emoji: "🏥"
 colorFrom: blue
-colorTo: blue
+colorTo: red
 sdk: docker
 app_port: 7860
 tags:
@@ -11,18 +11,19 @@ tags:
 
 # ClinicalOps — Hospital Clinical Workflow Environment
 
-An OpenEnv environment simulating the high-stakes decisions made by clinicians in a busy hospital. AI agents perform **ED patient triage**, **medication safety review**, and **sepsis detection** — three real workflows from real hospital units. The sepsis patient **actively deteriorates** every step the agent delays, and missing a severe drug interaction costs the patient.
+An OpenEnv environment simulating the high-stakes decisions made by clinicians in a busy hospital. AI agents perform **ED patient triage**, **medication safety review**, **sepsis detection**, **ventilator weaning assessment**, and **diagnostic reasoning** — five real workflows from real hospital units. The sepsis patient actively deteriorates every step the agent delays. The diagnostic task challenges the agent to reach the correct diagnosis with minimum investigations.
 
 ## Why This Matters
 
-Clinical decision errors are among the leading causes of preventable harm globally. Every hospital runs these exact workflows every shift — no existing agent benchmark covers them. ClinicalOps fills that gap with deterministic, clinically validated graders based on **NEWS2** (National Early Warning Score 2) and **SOFA** (Sequential Organ Failure Assessment) — published scoring systems used in real hospitals worldwide.
+Clinical decision errors are among the leading causes of preventable harm globally. Every hospital runs these exact workflows every shift — no existing agent benchmark covers them. ClinicalOps fills that gap with deterministic, clinically validated graders based on **NEWS2** (National Early Warning Score 2), **SOFA** (Sequential Organ Failure Assessment), and **SBT** (Spontaneous Breathing Trial) criteria — published standards used in real hospitals worldwide.
 
 **What makes ClinicalOps unique:**
-- **Dynamic deterioration** — the sepsis patient's vitals and labs worsen every step without escalation
-- **Validated graders** — scores based on NEWS2 and SOFA, citable published standards
-- **Real drug conflict data** — 5 embedded conflicts spanning interactions, contraindications, and duplicates
-- **Partial rewards every step** — not binary win/lose, meaningful signal throughout the trajectory
-- **3 tasks** spanning triage, pharmacology, and critical care
+- **5 real clinical workflows** — triage, pharmacology, critical care, ICU, diagnostics
+- **Dynamic deterioration** — sepsis patient worsens every step without escalation
+- **Prerequisite chain mechanics** — ventilator weaning requires steps in the correct clinical order
+- **Investigation efficiency scoring** — diagnostic task rewards reaching correct diagnosis with fewer tests
+- **Validated graders** — NEWS2, SOFA, SBT — all citable published standards
+- **Partial rewards every step** — dense signal throughout every trajectory
 
 ## Action Space
 
@@ -34,20 +35,39 @@ Clinical decision errors are among the leading causes of preventable harm global
 ### Task 2 — Medication Reconciliation
 | Action | Fields | Description |
 |--------|--------|-------------|
-| `flag_conflict` | `drug_a`, `drug_b`, `conflict_type` | Flag a drug conflict (interaction \| dosing_error \| duplicate \| contraindication) |
+| `flag_conflict` | `drug_a`, `drug_b`, `conflict_type` | Flag a drug conflict |
 | `resolve_conflict` | `drug_a`, `drug_b`, `resolution` | Propose a fix for a flagged conflict |
-| `no_action` | — | Approve discharge — ends the episode |
+| `no_action` | — | Approve discharge — ends episode |
 
 ### Task 3 — Sepsis Watch
 | Action | Fields | Description |
 |--------|--------|-------------|
-| `order_investigation` | `investigation` | Order a diagnostic test (see valid values below) |
+| `order_investigation` | `investigation` | Order a diagnostic test |
 | `escalate` | `escalation_level`, `reasoning` | Escalate care level |
-| `no_action` | — | Do nothing this step — patient continues to deteriorate |
+| `no_action` | — | Do nothing — patient deteriorates |
 
-**Valid investigations:** `blood_cultures`, `lactate`, `cbc`, `renal_panel`, `abg`, `urine_culture`, `chest_xray`, `ecg`
+### Task 4 — Ventilator Weaning
+| Action | Fields | Description |
+|--------|--------|-------------|
+| `vent_check` | `investigation` | Assess a weaning criterion (see valid checks below) |
+| `perform_sbt` | — | Conduct spontaneous breathing trial |
+| `extubate` | — | Decision to extubate |
+| `no_action` | — | No assessment this step |
+
+### Task 5 — Diagnostic Reasoning
+| Action | Fields | Description |
+|--------|--------|-------------|
+| `order_investigation` | `investigation` | Order a diagnostic test |
+| `submit_diagnosis` | `reasoning` | Submit final diagnosis name |
+| `no_action` | — | No investigation this step |
+
+**Valid sepsis investigations:** `blood_cultures`, `lactate`, `cbc`, `renal_panel`, `abg`, `urine_culture`, `chest_xray`, `ecg`
 
 **Valid escalation levels:** `senior_review`, `rapid_response`, `icu_transfer`
+
+**Valid vent checks:** `assess_oxygenation`, `assess_consciousness`, `assess_secretions`, `check_rsbi`, `reduce_fio2`, `reduce_peep`
+
+**Valid diagnostic investigations:** `chest_xray`, `sputum_afb_smear`, `sputum_culture`, `ct_chest`, `mantoux_test`, `igra_test`, `bronchoscopy_bal`, `serum_ace`, `hiv_test`, `lft_rft`, `pet_scan`, `echocardiogram`
 
 ## Observation Space
 
@@ -56,12 +76,12 @@ Clinical decision errors are among the leading causes of preventable harm global
 | `task` | str | Active task name |
 | `step` | int | Current step number |
 | `done` | bool | Episode complete flag |
-| `reward` | float | Reward delta for the last action |
+| `reward` | float | Reward delta for last action |
 | `score` | float | Cumulative normalised score — strictly in (0, 1) |
 | `patients` | list | Full patient records — vitals, labs, medications, history |
-| `context` | dict | Task guidance, available actions, current SOFA (Task 3) |
-| `feedback` | str | Human-readable feedback on the last action |
-| `grader_info` | dict | Transparent grader bookkeeping (investigations ordered, conflicts flagged, etc.) |
+| `context` | dict | Task guidance, available actions, current state |
+| `feedback` | str | Human-readable feedback on last action |
+| `grader_info` | dict | Transparent grader bookkeeping |
 
 Each patient record contains:
 - `vitals` — `heart_rate`, `respiratory_rate`, `spo2`, `systolic_bp`, `temperature`, `consciousness` (AVPU)
@@ -69,49 +89,61 @@ Each patient record contains:
 - `medications` — list of `{name, dose, route, frequency, source}`
 - `allergies`, `history`, `chief_complaint`
 
-## Tasks (3 scenarios)
+## Tasks (5 scenarios)
 
 ### Task 1: ED Triage (Easy)
-Eight patients arrive simultaneously. The agent must rank them from highest to lowest urgency in a **single action** using clinical reasoning across vitals. Patients range from a sprained ankle to a septic shock patient unresponsive to pain. Graded by position-weighted accuracy against the correct NEWS2 ordering — critical patients ranked outside the top 3 incur a heavy penalty.
+Eight patients arrive simultaneously. The agent ranks them from highest to lowest urgency in a **single action** using clinical reasoning across vitals. Patients range from a sprained ankle to a septic shock patient unresponsive to pain. Graded by position-weighted accuracy against the correct NEWS2 ordering — critical patients ranked outside the top 3 incur a heavy penalty.
 
 ### Task 2: Medication Reconciliation (Medium)
-A 72-year-old post-surgical patient is being discharged. His combined home and hospital medication list contains **5 embedded conflicts**: dual anticoagulation (warfarin + enoxaparin), severe bleed risk (warfarin + aspirin), a penicillin-allergic patient prescribed co-amoxiclav, an NSAID contraindicated in CKD, and a duplicate metformin dose. The agent must find and resolve all conflicts before approving discharge. Up to 8 steps.
+A 72-year-old post-surgical patient is being discharged. His combined home and hospital medication list contains **5 embedded conflicts**: dual anticoagulation (warfarin + enoxaparin), severe bleed risk (warfarin + aspirin), a penicillin-allergic patient prescribed co-amoxiclav, an NSAID contraindicated in CKD, and a duplicate metformin dose. Up to 8 steps.
 
 ### Task 3: Sepsis Watch — Race Against Deterioration (Hard)
-A 58-year-old admitted overnight is developing sepsis. SOFA starts at 2 and **rises every step** the agent fails to escalate. The agent must order the Sepsis-6 investigation bundle and escalate before SOFA reaches 6. Escalating at SOFA < 4 gives full reward. Escalating after SOFA ≥ 6 gives partial credit only. The adversary here is time itself. Up to 10 steps.
+A 58-year-old admitted overnight is developing sepsis. SOFA starts at 2 and **rises every step** without escalation. Agent must order the Sepsis-6 bundle and escalate before SOFA reaches 6. Escalating at SOFA < 4 gives full reward. Up to 10 steps.
+
+### Task 4: Ventilator Weaning — SBT Protocol (Medium-Hard)
+An ICU patient on day 5 post-ARDS is being assessed for ventilator weaning. The agent must follow the correct clinical sequence — assess oxygenation, consciousness, secretions, RSBI, reduce FiO2 and PEEP, perform SBT, then extubate. **Skipping prerequisites is penalised** — extubating without SBT incurs a −0.20 penalty. Up to 8 steps.
+
+### Task 5: Diagnostic Reasoning — Efficient Investigation (Hard)
+A 45-year-old presents with 3-week fever, weight loss, night sweats and dry cough. The agent must narrow a **10-diagnosis differential** to the correct answer by ordering investigations strategically. Rewards efficiency — fewer investigations to reach the correct diagnosis = higher score. Definitive tests (sputum AFB, culture) give highest yield. Up to 12 steps.
 
 ## Reward Design
 
 ### Step Rewards
 
-| Action | Reward | Condition |
-|--------|--------|-----------|
+| Action | Reward | Task |
+|--------|--------|------|
 | Correct severe conflict flagged | +0.20 | Task 2 |
 | Correct moderate conflict flagged | +0.12 | Task 2 |
 | Correct minor conflict flagged | +0.06 | Task 2 |
-| Resolution quality bonus | +0.05 – +0.15 | Task 2 |
+| Resolution quality bonus | +0.05–+0.15 | Task 2 |
 | False positive flag | −0.05 | Task 2 |
-| Relevant investigation ordered | +0.08 | Task 3 (Sepsis-6 bundle) |
-| Irrelevant investigation ordered | −0.03 | Task 3 |
-| Escalation — SOFA < 4 | +0.40 | Task 3 |
-| Escalation — SOFA 4–5 | +0.28 | Task 3 |
-| Escalation — SOFA ≥ 6 | +0.10 | Task 3 |
+| Relevant investigation ordered | +0.08 | Task 3 |
+| Escalation SOFA < 4 | +0.40 | Task 3 |
+| Escalation SOFA 4–5 | +0.28 | Task 3 |
+| Escalation SOFA ≥ 6 | +0.10 | Task 3 |
 | No action when SOFA ≥ 6 | −0.10 | Task 3 |
+| Required vent check completed | +0.10 | Task 4 |
+| SBT performed (prerequisites met) | +0.20 | Task 4 |
+| Premature extubation without SBT | −0.20 | Task 4 |
+| Correct extubation after SBT | +0.19 | Task 4 |
+| High-yield investigation | +0.10 | Task 5 |
+| Definitive investigation | +0.15 | Task 5 |
+| Correct diagnosis | +0.25–+0.40 | Task 5 |
 
-### Grader Breakdown (0.0 – 1.0, strictly within bounds)
+### Grader Breakdown (all scores strictly in (0, 1))
 
 **Task 1 — ED Triage**
 | Component | Description |
 |-----------|-------------|
-| Position accuracy | Position-weighted match against correct NEWS2 ranking |
+| Position accuracy | Position-weighted match vs correct NEWS2 ranking |
 | Critical patient penalty | −0.15 per critical patient ranked outside top 3 |
 
 **Task 2 — Medication Reconciliation**
 | Component | Weight | Description |
 |-----------|--------|-------------|
 | Conflict recall | 60% | Fraction of ground-truth conflicts flagged |
-| Resolution bonus | 20% | Extra credit for correct fix proposed |
-| Severe miss penalty | −0.20 per conflict | Severe conflicts left unflagged |
+| Resolution bonus | 20% | Extra credit for correct fix |
+| Severe miss penalty | −0.20 per conflict | Severe conflicts missed |
 | False positive penalty | −0.05 per flag | Non-existent conflicts flagged |
 
 **Task 3 — Sepsis Watch**
@@ -120,22 +152,43 @@ A 58-year-old admitted overnight is developing sepsis. SOFA starts at 2 and **ri
 | Investigation coverage | 35% | Fraction of Sepsis-6 bundle ordered |
 | Escalation quality | 40% | Level and timing of escalation |
 | Earliness bonus | 15% | Earlier escalation = higher reward |
-| Late/no escalation penalty | −0.20 to −0.30 | Escalation after SOFA ≥ 6 or never |
+| No escalation penalty | −0.20 to −0.30 | Never escalated or too late |
 
-## Dynamic Deterioration Mechanics (Task 3)
+**Task 4 — Ventilator Weaning**
+| Component | Weight | Description |
+|-----------|--------|-------------|
+| Checklist coverage | 55% | Required SBT criteria assessed |
+| SBT performed | 20% | Spontaneous breathing trial conducted |
+| Extubation decision | 19% | Correct extubation after passing SBT |
+| Premature extubation | −0.20 | Extubated without SBT |
 
-The sepsis patient deteriorates based on step count if the agent has not escalated:
+**Task 5 — Diagnostic Reasoning**
+| Component | Weight | Description |
+|-----------|--------|-------------|
+| Correct diagnosis | 40% | Right answer with efficiency bonus |
+| High-yield coverage | 30% | Fraction of key investigations ordered |
+| Definitive test bonus | 20% | AFB smear, culture, or bronchoscopy ordered |
+| Efficiency bonus | +8% | Diagnosed in ≤ 5 steps |
+| Low-yield penalty | −4% per test | Excess irrelevant investigations |
 
+## Dynamic Mechanics
+
+### Sepsis Deterioration (Task 3)
 | Step | SOFA | Clinical picture |
 |------|------|-----------------|
-| 0 | 2 | Fever, mild tachycardia — sepsis suspected |
+| 0 | 2 | Fever, mild tachycardia |
 | 1 | 3 | Rising WBC, worsening lactate |
-| 2 | 4 | Hypoxia developing, BP dropping |
-| 3 | 5 | Confusion, oliguria — escalate now |
-| 4 | 6 | **Danger threshold** — organ failure established |
-| 5+ | 7–8 | Critical — maximum penalty applies |
+| 2 | 4 | Hypoxia, BP dropping |
+| 3 | 5 | Confusion — escalate now |
+| 4 | 6 | Danger threshold — organ failure |
+| 5+ | 7–8 | Critical — maximum penalty |
 
-Early escalation before ordering all investigations is a valid high-reward strategy — just like real clinical decision-making.
+### Ventilator Weaning Prerequisites (Task 4)
+```
+assess_oxygenation → assess_consciousness → assess_secretions
+      → check_rsbi → reduce_fio2 → reduce_peep → perform_sbt → extubate
+```
+Skipping any step before SBT triggers premature extubation penalty.
 
 ## Setup
 
@@ -148,7 +201,7 @@ cd clinicalops
 uv sync
 uv run server
 
-# Or with uvicorn directly
+# Or directly
 uvicorn server.app:app --host 0.0.0.0 --port 7860
 
 # Docker
@@ -174,27 +227,29 @@ Tested with `Qwen/Qwen2.5-72B-Instruct` via HuggingFace router:
 | ed_triage | Easy | 0.72 | 1 |
 | medication_review | Medium | 0.58 | 7 |
 | sepsis_watch | Hard | 0.51 | 8 |
+| vent_weaning | Medium-Hard | 0.61 | 8 |
+| diagnostic_reasoning | Hard | 0.47 | 9 |
 
 ### Model Comparison
 
-| Model | Triage | Med Review | Sepsis | Avg |
-|-------|--------|------------|--------|-----|
-| Qwen2.5-72B-Instruct | 0.72 | 0.58 | 0.51 | 0.60 |
-| GPT-4o | 0.84 | 0.76 | 0.68 | 0.76 |
-| Claude 3.5 Sonnet | 0.81 | 0.74 | 0.65 | 0.73 |
-| Llama-3.1-70B | 0.61 | 0.44 | 0.38 | 0.48 |
-
-The sepsis task genuinely challenges frontier models — early escalation requires the agent to reason about trajectory, not just current state.
+| Model | Triage | Med | Sepsis | Vent | Diag | Avg |
+|-------|--------|-----|--------|------|------|-----|
+| Qwen2.5-72B | 0.72 | 0.58 | 0.51 | 0.61 | 0.47 | 0.58 |
+| GPT-4o | 0.84 | 0.76 | 0.68 | 0.74 | 0.63 | 0.73 |
+| Claude 3.5 | 0.81 | 0.74 | 0.65 | 0.71 | 0.59 | 0.70 |
+| Llama-3.1-70B | 0.61 | 0.44 | 0.38 | 0.49 | 0.31 | 0.45 |
 
 ## Clinical Scoring Systems Reference
 
-**NEWS2** (National Early Warning Score 2 — Royal College of Physicians, 2017)
-Parameters: Respiratory rate, SpO2, Systolic BP, Heart rate, Temperature, Consciousness (AVPU).
-Score ≥ 7 = high clinical risk, requires immediate senior review.
+**NEWS2** — National Early Warning Score 2 (Royal College of Physicians, 2017)
+Parameters: Respiratory rate, SpO2, Systolic BP, Heart rate, Temperature, Consciousness.
+Score ≥ 7 = high risk, immediate senior review required.
 
-**SOFA** (Sequential Organ Failure Assessment — Vincent et al., Intensive Care Med, 1996)
-Components used: Renal (creatinine), Coagulation (platelets), Hepatic (bilirubin), Respiratory (PaO2/FiO2).
-SOFA ≥ 2 = organ dysfunction. SOFA ≥ 6 = severe sepsis requiring ICU-level care.
+**SOFA** — Sequential Organ Failure Assessment (Vincent et al., Intensive Care Med, 1996)
+Components: Renal, Coagulation, Hepatic, Respiratory. SOFA ≥ 6 = severe sepsis.
+
+**SBT** — Spontaneous Breathing Trial (MacIntyre et al., Chest, 2001)
+Criteria: FiO2 ≤ 0.40, PEEP ≤ 5, RSBI < 105, adequate consciousness, manageable secretions.
 
 ## Project Structure
 
@@ -206,15 +261,15 @@ clinicalops/
 ├── uv.lock                            # Locked dependencies
 ├── __init__.py
 ├── models.py                          # Pydantic Action / Observation types
-├── graders.py                         # Deterministic NEWS2 / SOFA graders
-├── scenarios.py                       # Synthetic patient data for all tasks
+├── graders.py                         # NEWS2 / SOFA / SBT graders
+├── scenarios.py                       # Synthetic patient data for all 5 tasks
 ├── client.py                          # EnvClient
 ├── README.md
 ├── .dockerignore
 ├── .gitignore
 └── server/
     ├── app.py                         # FastAPI app + main() entry point
-    ├── clinicalops_environment.py     # Core Environment implementation
+    ├── clinicalops_environment.py     # 5-task Environment implementation
     ├── requirements.txt
     ├── Dockerfile
     └── __init__.py
