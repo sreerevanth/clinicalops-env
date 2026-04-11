@@ -264,3 +264,92 @@ def grade_sepsis(
         score -= 0.20
 
     return max(0.06, min(0.94, round(score, 4)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ventilator Weaning grader  (Task 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+REQUIRED_VENT_CHECKS = {
+    "assess_oxygenation", "assess_consciousness", "assess_secretions",
+    "check_rsbi", "reduce_fio2", "reduce_peep", "perform_sbt"
+}
+
+def grade_vent_weaning(
+    checks_completed: List[str],
+    sbt_performed: bool,
+    extubation_decision: str,
+    premature_extubation: bool,
+) -> float:
+    """
+    Task 4 grader — SBT checklist coverage + correct extubation decision.
+    Returns score strictly in (0.06, 0.94).
+    """
+    completed_set = set(c.lower() for c in checks_completed)
+
+    # Coverage of required checks
+    coverage = len(completed_set & REQUIRED_VENT_CHECKS) / len(REQUIRED_VENT_CHECKS)
+    score = coverage * 0.55
+
+    # SBT performed bonus
+    if sbt_performed:
+        score += 0.20
+
+    # Extubation decision
+    if extubation_decision == "extubate" and sbt_performed and not premature_extubation:
+        score += 0.19
+    elif extubation_decision == "continue_weaning":
+        score += 0.08
+    elif premature_extubation:
+        score -= 0.20
+
+    return max(0.06, min(0.94, round(score, 4)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Diagnostic Reasoning grader  (Task 5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+HIGH_YIELD_INVESTIGATIONS = {"chest_xray", "sputum_afb_smear", "ct_chest", "mantoux_test", "igra_test"}
+DEFINITIVE_INVESTIGATIONS = {"sputum_afb_smear", "sputum_culture", "bronchoscopy_bal"}
+
+def grade_diagnostic(
+    investigations_ordered: List[str],
+    final_diagnosis: str,
+    correct_diagnosis: str,
+    steps_taken: int,
+    max_steps: int,
+) -> float:
+    """
+    Task 5 grader — investigation efficiency + diagnostic accuracy.
+    Returns score strictly in (0.06, 0.94).
+    """
+    ordered_set = set(i.lower() for i in investigations_ordered)
+    score = 0.0
+
+    # 1. Correct diagnosis (up to 0.40)
+    if final_diagnosis.lower() == correct_diagnosis.lower():
+        # Bonus for efficiency — fewer investigations = higher reward
+        efficiency = 1.0 - (len(ordered_set) / max(max_steps, 1))
+        score += 0.25 + efficiency * 0.15
+    else:
+        score += 0.0
+
+    # 2. High-yield investigation coverage (up to 0.30)
+    hyi_coverage = len(ordered_set & HIGH_YIELD_INVESTIGATIONS) / len(HIGH_YIELD_INVESTIGATIONS)
+    score += hyi_coverage * 0.30
+
+    # 3. Definitive test ordered bonus (up to 0.20)
+    if ordered_set & DEFINITIVE_INVESTIGATIONS:
+        score += 0.20
+
+    # 4. Efficiency penalty — too many low-yield tests
+    low_yield = ordered_set - HIGH_YIELD_INVESTIGATIONS - DEFINITIVE_INVESTIGATIONS
+    if len(low_yield) > 3:
+        score -= (len(low_yield) - 3) * 0.04
+
+    # 5. Speed bonus — diagnosed early
+    if final_diagnosis.lower() == correct_diagnosis.lower() and steps_taken <= 5:
+        score += 0.08
+
+    return max(0.06, min(0.94, round(score, 4)))
